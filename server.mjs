@@ -1,12 +1,11 @@
 import { createServer } from 'node:http';
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync, createReadStream } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { createReadStream } from 'node:fs';
 import { createInterface } from 'node:readline';
-import zlib from 'node:zlib';
+import { gzipSync } from 'node:zlib';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
@@ -69,11 +68,12 @@ async function parseClaude(since, until) {
 
   for (const pdir of projectDirs) {
     const projPath = join(CONFIG.claudeDir, pdir.name);
-    const userName = homedir().split('/').pop();
+    const home = homedir();
     const projName = pdir.name
-      .replace(/^-Users-/, '')
+      .replace(new RegExp('^' + home.replace(/\//g, '-').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), '')
+      .replace(/^-/, '')
       .replace(/-/g, '/')
-      .replace(new RegExp(`^${userName}/`), '~/');
+      .replace(/^\//, '~/');
 
     let files = [];
     try { files = readdirSync(projPath).filter(f => f.endsWith('.jsonl')); } catch { continue; }
@@ -128,7 +128,7 @@ function queryOpenCode(since, until) {
     const daily = db.prepare(`
       SELECT date(time_created/1000, 'unixepoch') as day,
         SUM(CAST(COALESCE(json_extract(data, '$.tokens.total'), '0') AS INTEGER)) as tokens
-      FROM message WHERE data LIKE '%tokens%' AND time_created >= ? AND time_created <= ?
+      FROM message WHERE json_extract(data, '$.tokens') IS NOT NULL AND time_created >= ? AND time_created <= ?
       GROUP BY day ORDER BY day
     `).all(since, until);
 
@@ -144,7 +144,7 @@ function queryOpenCode(since, until) {
         SUM(CAST(COALESCE(json_extract(data, '$.tokens.total'), '0') AS INTEGER)) as total_tokens,
         ROUND(SUM(CAST(COALESCE(json_extract(data, '$.cost'), '0') AS REAL)), 6) as cost,
         COUNT(*) as msg_count
-      FROM message WHERE data LIKE '%tokens%' AND time_created >= ? AND time_created <= ?
+      FROM message WHERE json_extract(data, '$.tokens') IS NOT NULL AND time_created >= ? AND time_created <= ?
       GROUP BY model, provider ORDER BY total_tokens DESC
     `).all(since, until);
 
@@ -159,12 +159,12 @@ function queryOpenCode(since, until) {
         COALESCE(SUM(CAST(json_extract(data, '$.tokens.cache.write') AS INTEGER)), 0) as cache_write,
         COALESCE(SUM(CAST(json_extract(data, '$.tokens.total') AS INTEGER)), 0) as total,
         ROUND(SUM(CAST(COALESCE(json_extract(data, '$.cost'), '0') AS REAL)), 4) as cost
-      FROM message WHERE data LIKE '%tokens%' AND time_created >= ? AND time_created <= ?
+      FROM message WHERE json_extract(data, '$.tokens') IS NOT NULL AND time_created >= ? AND time_created <= ?
     `).get(since, until);
 
     const activeDays = db.prepare(`
       SELECT COUNT(DISTINCT date(time_created/1000, 'unixepoch')) as cnt
-      FROM message WHERE data LIKE '%tokens%' AND time_created >= ? AND time_created <= ?
+      FROM message WHERE json_extract(data, '$.tokens') IS NOT NULL AND time_created >= ? AND time_created <= ?
     `).get(since, until);
 
     const editStats = db.prepare(`
@@ -185,7 +185,7 @@ function queryOpenCode(since, until) {
 
     const lastMsg = db.prepare(`
       SELECT datetime(time_created/1000, 'unixepoch') as last_ts
-      FROM message WHERE data LIKE '%tokens%' ORDER BY time_created DESC LIMIT 1
+      FROM message WHERE json_extract(data, '$.tokens') IS NOT NULL ORDER BY time_created DESC LIMIT 1
     `).get();
 
     return { totals: { ...totals, activeDays: activeDays.cnt }, daily, models, editStats, lastUpdate: lastMsg?.last_ts || 'N/A' };
@@ -208,19 +208,14 @@ function shouldCompress(req) {
   return ae.includes('gzip');
 }
 
-function compressResponse(content, res) {
-  zlib.gzip(content, (err, compressed) => {
-    if (err) {
-      res.end(content);
-      return;
-    }
-    res.writeHead(res.statusCode, {
-      ...res.getHeaders(),
-      'Content-Encoding': 'gzip',
-      'Content-Length': compressed.length,
-    });
-    res.end(compressed);
+function gzipResponse(content, res, extraHeaders = {}) {
+  const compressed = gzipSync(content);
+  res.writeHead(res.statusCode, {
+    ...extraHeaders,
+    'Content-Encoding': 'gzip',
+    'Content-Length': compressed.length,
   });
+  res.end(compressed);
 }
 
 const server = createServer(async (req, res) => {
@@ -229,10 +224,11 @@ const server = createServer(async (req, res) => {
   if (url.pathname === '/chart.js') {
     try {
       const content = readFileSync(join(__dirname, 'node_modules/chart.js/dist/chart.umd.js'));
-      res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'public, max-age=3600' });
       if (shouldCompress(req)) {
-        compressResponse(content, res);
+        res.statusCode = 200;
+        gzipResponse(content, res, { 'Content-Type': 'application/javascript', 'Cache-Control': 'public, max-age=3600' });
       } else {
+        res.writeHead(200, { 'Content-Type': 'application/javascript', 'Cache-Control': 'public, max-age=3600' });
         res.end(content);
       }
     } catch (e) {
@@ -243,7 +239,7 @@ const server = createServer(async (req, res) => {
   }
 
   if (url.pathname === '/api/data') {
-    const since = url.searchParams.get('since') || '2026-01-01';
+    const since = url.searchParams.get('since') || `${new Date().getFullYear()}-01-01`;
     const until = url.searchParams.get('until') || '2099-12-31';
     const source = url.searchParams.get('source') || 'all';
 
@@ -298,10 +294,11 @@ const server = createServer(async (req, res) => {
       }
 
       const json = JSON.stringify(result);
-      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
       if (shouldCompress(req)) {
-        compressResponse(Buffer.from(json), res);
+        res.statusCode = 200;
+        gzipResponse(Buffer.from(json), res, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
       } else {
+        res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*', 'Cache-Control': 'no-cache' });
         res.end(json);
       }
     } catch (err) {
@@ -321,11 +318,13 @@ const server = createServer(async (req, res) => {
   try {
     const html = readFileSync(join(__dirname, 'index.html'), 'utf-8');
     res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-    if (shouldCompress(req)) {
-      compressResponse(Buffer.from(html), res);
-    } else {
-      res.end(html);
-    }
+  if (shouldCompress(req)) {
+    res.statusCode = 200;
+    gzipResponse(Buffer.from(html), res, { 'Content-Type': 'text/html; charset=utf-8' });
+  } else {
+    res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+    res.end(html);
+  }
   } catch (e) {
     res.writeHead(404);
     res.end('Not found');

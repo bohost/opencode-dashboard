@@ -65,7 +65,7 @@ h1{font-size:22px;letter-spacing:-0.3px}
 
 <div class="controls">
 <label style="font-size:12px;color:var(--dim)">时间范围:</label>
-<input type="date" id="dateSince" value="2026-01-01">
+<input type="date" id="dateSince">
 <span style="color:var(--dim)">~</span>
 <input type="date" id="dateUntil">
 <label style="font-size:12px;color:var(--dim);margin-left:4px">数据源:</label>
@@ -108,10 +108,24 @@ let refreshInterval = 60000;
 let intervalTimer = null;
 let countdownTimer = null;
 let isLoading = false;
+let retryCount = 0;
+const MAX_RETRY = 3;
+const RETRY_DELAY = 5000;
 
+document.getElementById('dateSince').value = new Date().getFullYear() + '-01-01';
 document.getElementById('dateUntil').value = new Date().toISOString().slice(0, 10);
 
-function setLoading(state) {
+function setLoading(state, targetId) {
+  if (targetId) {
+    const overlay = document.getElementById(targetId);
+    if (overlay) overlay.classList.toggle('active', state);
+    if (state) {
+      document.getElementById('statusDot').className = 'dot loading';
+      document.getElementById('statusText').textContent = '加载中';
+    }
+    isLoading = state;
+    return;
+  }
   isLoading = state;
   const overlays = document.querySelectorAll('.loading-overlay');
   overlays.forEach(el => el.classList.toggle('active', state));
@@ -282,8 +296,10 @@ async function fetchData() {
   setLoading(true);
   try {
     const r = await fetch(`/api/data?since=${since}&until=${until}&source=${source}`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
     const result = await r.json();
     if (result.error) throw new Error(result.error);
+    retryCount = 0;
     const data = result.sources || result;
     document.getElementById('lastUpdate').textContent = '更新: ' + new Date(result.refreshedAt).toLocaleTimeString();
     document.getElementById('statusDot').className = 'dot';
@@ -292,9 +308,16 @@ async function fetchData() {
     renderCharts(data);
     resetCountdown();
   } catch (e) {
+    retryCount++;
     document.getElementById('lastUpdate').textContent = '错误: ' + e.message;
     document.getElementById('statusDot').className = 'dot err';
     document.getElementById('statusText').textContent = '错误';
+    if (retryCount < MAX_RETRY) {
+      document.getElementById('statusText').textContent = `错误 (${retryCount}/${MAX_RETRY})，${RETRY_DELAY/1000}s后重试`;
+      setTimeout(fetchData, RETRY_DELAY);
+    } else {
+      document.getElementById('statusText').textContent = '错误 (已耗尽重试)';
+    }
   } finally {
     setLoading(false);
   }
