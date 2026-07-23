@@ -1,0 +1,341 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>openCode Dashboard v2</title>
+<script src="/chart.js"></script>
+<style>
+:root{--bg:#0d1117;--card:#161b22;--border:#30363d;--text:#e1e4e8;--dim:#8b949e;--blue:#58a6ff;--green:#3fb950;--yellow:#d29922;--red:#f85149;--purple:#a371f7}
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);padding:20px 24px}
+header{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;flex-wrap:wrap;gap:12px}
+h1{font-size:22px;letter-spacing:-0.3px}
+.header-right{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.controls{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:16px}
+.controls input[type=date]{background:var(--card);border:1px solid var(--border);color:var(--text);padding:4px 8px;border-radius:6px;font-size:13px}
+.controls select,.controls button{background:var(--card);border:1px solid var(--border);color:var(--text);padding:5px 10px;border-radius:6px;font-size:13px;cursor:pointer}
+.controls button:hover,.controls select:hover{border-color:var(--blue)}
+.controls button.primary{background:var(--blue);border-color:var(--blue);color:#fff}
+.status{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--dim)}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--green);animation:pulse 2s infinite}
+.dot.err{background:var(--red)}
+.dot.loading{background:var(--yellow)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.3}}
+.badge{font-size:11px;padding:2px 8px;border-radius:10px;background:var(--card);border:1px solid var(--border);color:var(--dim)}
+.source-tag{font-size:10px;padding:1px 6px;border-radius:8px;margin-left:4px}
+.source-tag.oc{background:rgba(88,166,255,0.15);color:var(--blue)}
+.source-tag.claude{background:rgba(163,113,247,0.15);color:var(--purple)}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:14px 16px;transition:border-color 0.3s}
+.card:hover{border-color:var(--blue)}
+.card .label{font-size:11px;color:var(--dim);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px}
+.card .value{font-size:24px;font-weight:700;color:var(--blue)}
+.card .sub{font-size:11px;color:var(--dim);margin-top:2px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+@media(max-width:900px){.grid{grid-template-columns:1fr}}
+.chart-box{background:var(--card);border:1px solid var(--border);border-radius:8px;padding:18px;position:relative}
+.chart-box h3{font-size:13px;color:var(--dim);margin-bottom:12px;font-weight:500}
+.chart-box canvas{max-height:320px}
+.full{grid-column:1/-1}
+.countdown{font-size:10px;color:var(--dim);margin-left:6px}
+.info-row{display:flex;gap:24px;font-size:12px;color:var(--dim);margin-bottom:12px}
+.loading-overlay{position:absolute;inset:0;background:rgba(13,17,23,0.6);display:flex;align-items:center;justify-content:center;border-radius:8px;z-index:1;opacity:0;pointer-events:none;transition:opacity 0.2s}
+.loading-overlay.active{opacity:1;pointer-events:auto}
+.spinner{width:24px;height:24px;border:3px solid var(--border);border-top-color:var(--blue);border-radius:50%;animation:spin 0.8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+
+<header>
+<div>
+<h1>AI Coding Usage Dashboard</h1>
+<div class="info-row">
+<span id="lastUpdate">加载中...</span>
+<span id="sourceInfo"></span>
+</div>
+</div>
+<div class="header-right">
+<div class="status"><div class="dot loading" id="statusDot"></div><span id="statusText">加载中</span></div>
+<span class="badge" id="countdownBadge">60s</span>
+<button onclick="fetchData()" class="primary" style="font-size:12px;padding:4px 10px">刷新</button>
+</div>
+</header>
+
+<div class="controls">
+<label style="font-size:12px;color:var(--dim)">时间范围:</label>
+<input type="date" id="dateSince" value="2026-01-01">
+<span style="color:var(--dim)">~</span>
+<input type="date" id="dateUntil">
+<label style="font-size:12px;color:var(--dim);margin-left:4px">数据源:</label>
+<select id="sourceSelect">
+<option value="all">全部 (openCode + Claude Code)</option>
+<option value="opencode">仅 openCode</option>
+</select>
+<label style="font-size:12px;color:var(--dim);margin-left:4px">刷新间隔:</label>
+<select id="intervalSelect">
+<option value="10000">10 秒</option>
+<option value="30000">30 秒</option>
+<option value="60000" selected>1 分钟</option>
+<option value="300000">5 分钟</option>
+<option value="0">手动</option>
+</select>
+<button onclick="applyFilter()" class="primary">应用</button>
+</div>
+
+<div class="cards" id="cards"></div>
+
+<div class="grid">
+<div class="chart-box full"><h3>每日 Token 消耗趋势<span class="countdown" id="trendCountdown"></span></h3><div class="loading-overlay" id="dailyLoading"><div class="spinner"></div></div><canvas id="dailyChart"></canvas></div>
+</div>
+
+<div class="grid">
+<div class="chart-box"><h3>模型 Token 用量 Top 15</h3><div class="loading-overlay" id="modelLoading"><div class="spinner"></div></div><canvas id="modelChart"></canvas></div>
+<div class="chart-box"><h3>Token 类型分布</h3><div class="loading-overlay" id="typeLoading"><div class="spinner"></div></div><canvas id="typeChart"></canvas></div>
+</div>
+
+<div class="grid">
+<div class="chart-box"><h3>Provider 分布</h3><div class="loading-overlay" id="providerLoading"><div class="spinner"></div></div><canvas id="providerChart"></canvas></div>
+<div class="chart-box"><h3>代码编辑成功率 (openCode)</h3><div class="loading-overlay" id="adoptionLoading"><div class="spinner"></div></div><canvas id="adoptionChart"></canvas></div>
+</div>
+
+<script>
+const COLORS = ['#58a6ff','#3fb950','#d29922','#f85149','#a371f7','#79c0ff','#56d364','#e3b341','#ff7b72','#bc8cff','#7ee787','#f0883e','#dcbdfb','#768390','#c380ff'];
+let charts = {};
+let countdown = 60;
+let refreshInterval = 60000;
+let intervalTimer = null;
+let countdownTimer = null;
+let isLoading = false;
+
+document.getElementById('dateUntil').value = new Date().toISOString().slice(0, 10);
+
+function setLoading(state) {
+  isLoading = state;
+  const overlays = document.querySelectorAll('.loading-overlay');
+  overlays.forEach(el => el.classList.toggle('active', state));
+  const dot = document.getElementById('statusDot');
+  const text = document.getElementById('statusText');
+  if (state) {
+    dot.className = 'dot loading';
+    text.textContent = '加载中';
+  }
+}
+
+function fmt(n) {
+  if (n >= 1e8) return (n/1e8).toFixed(2)+'亿';
+  if (n >= 1e6) return (n/1e6).toFixed(1)+'M';
+  if (n >= 1e4) return (n/1e3).toFixed(1)+'K';
+  return n ? Math.round(n).toLocaleString() : '0';
+}
+
+function updateOrCreateChart(canvasId, type, data, options) {
+  if (charts[canvasId]) {
+    const chart = charts[canvasId];
+    chart.data = data;
+    chart.options = options;
+    chart.update('none');
+    return chart;
+  }
+  charts[canvasId] = new Chart(document.getElementById(canvasId), { type, data, options });
+  return charts[canvasId];
+}
+
+function renderCards(data) {
+  if (!data.opencode) return;
+  const t = data.opencode.totals;
+  const cTotal = data.opencode.claudeTotal || 0;
+  const allTotal = t.total + cTotal;
+  const sourceTags = [];
+  if (data.opencode) sourceTags.push('<span class="source-tag oc">openCode</span>');
+  if (cTotal > 0) sourceTags.push(`<span class="source-tag claude">Claude Code ${fmt(cTotal)}</span>`);
+  document.getElementById('sourceInfo').innerHTML = sourceTags.join(' ');
+
+  const totalEdits = data.opencode.editStats.reduce((s, d) => s + d.success + d.failed, 0);
+  const successEdits = data.opencode.editStats.reduce((s, d) => s + d.success, 0);
+  const editRate = totalEdits > 0 ? (successEdits / totalEdits * 100).toFixed(1) : '0.0';
+  const avgDaily = Math.round(allTotal / Math.max(1, t.activeDays));
+  const costPerToken = t.cost && allTotal ? (t.cost / allTotal * 1e6).toFixed(2) : '0.00';
+
+  document.getElementById('cards').innerHTML = `
+    <div class="card"><div class="label">总 Token${cTotal>0?' (含Claude)':''}</div><div class="value">${(allTotal/1e8).toFixed(2)}亿</div><div class="sub">${allTotal.toLocaleString()}</div></div>
+    <div class="card"><div class="label">消息数</div><div class="value" style="color:#3fb950">${fmt(t.msg_count)}</div><div class="sub">${t.sessions} Sessions</div></div>
+    <div class="card"><div class="label">日均 Token</div><div class="value" style="color:#d29922">${fmt(avgDaily)}</div><div class="sub">${t.activeDays} 活跃天</div></div>
+    <div class="card"><div class="label">总费用</div><div class="value" style="color:#d29922">$${t.cost}</div><div class="sub">~$${costPerToken}/M tokens</div></div>
+    <div class="card"><div class="label">编辑成功率</div><div class="value" style="color:#3fb950">${editRate}%</div><div class="sub">${successEdits}/${totalEdits} 次编辑</div></div>
+  `;
+}
+
+function renderCharts(data) {
+  if (!data.opencode) return;
+  const oc = data.opencode;
+  const cTotal = oc.claudeTotal || 0;
+
+  const dailyLabels = oc.daily.map(d => d.day.slice(5));
+  const dailyData = oc.daily.map(d => d.tokens);
+  updateOrCreateChart('dailyChart', 'line', {
+    labels: dailyLabels,
+    datasets: [{
+      label: '每日 Token (openCode)',
+      data: dailyData,
+      borderColor: '#58a6ff',
+      backgroundColor: 'rgba(88,166,255,0.08)',
+      fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5
+    }]
+  }, {
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { ticks: { color: '#8b949e', maxTicksLimit: 25, font: { size: 10 } } },
+      y: { ticks: { color: '#8b949e', callback: v => (v / 1e6).toFixed(0) + 'M' }, grid: { color: '#21262d' } }
+    },
+    plugins: { legend: { labels: { color: '#8b949e', font: { size: 11 }, usePointStyle: true } } },
+    interaction: { mode: 'index', intersect: false }
+  });
+
+  let allModels = oc.models.filter(d => d.total_tokens > 0).map(d => ({ model: d.model, provider: d.provider, total: d.total_tokens, source: 'opencode' }));
+  if (oc.claudeModels) {
+    allModels = allModels.concat(oc.claudeModels.map(d => ({ model: d.model, provider: 'claude', total: d.total_tokens, source: 'claude' })));
+  }
+  allModels.sort((a, b) => b.total - a.total);
+  const top15 = allModels.slice(0, 15);
+
+  updateOrCreateChart('modelChart', 'bar', {
+    labels: top15.map(d => d.model + ' (' + d.provider + ')'),
+    datasets: [{
+      data: top15.map(d => d.total),
+      backgroundColor: top15.map((d, i) => d.source === 'claude' ? '#a371f7' : COLORS[i % COLORS.length]),
+      borderRadius: 3, borderSkipped: false
+    }]
+  }, {
+    indexAxis: 'y',
+    responsive: true, maintainAspectRatio: false,
+    scales: {
+      x: { ticks: { color: '#8b949e', callback: v => (v / 1e6).toFixed(0) + 'M' }, grid: { color: '#21262d' } },
+      y: { ticks: { color: '#8b949e', font: { size: 9 } } }
+    },
+    plugins: { legend: { display: false } }
+  });
+
+  const t = oc.totals;
+  const typeLabels = ['输入', '输出', '推理', '缓存读取', '缓存写入'];
+  const typeData = [t.input, t.output, t.reasoning, t.cache_read, t.cache_write];
+  const typeColors = ['#58a6ff', '#3fb950', '#d29922', '#a371f7', '#f85149'];
+  if (cTotal > 0 && oc.claudeModels) {
+    typeLabels.push('Claude总计');
+    typeData.push(cTotal);
+    typeColors.push('#bc8cff');
+  }
+  const typeTotal = typeData.reduce((s, v) => s + v, 0);
+  updateOrCreateChart('typeChart', 'doughnut', {
+    labels: typeLabels,
+    datasets: [{ data: typeData, backgroundColor: typeColors, borderWidth: 0 }]
+  }, {
+    responsive: true, maintainAspectRatio: false,
+    plugins: {
+      legend: { position: 'right', labels: { color: '#8b949e', font: { size: 10 }, padding: 14, usePointStyle: true } },
+      tooltip: { callbacks: { label: ctx => ctx.label + ': ' + (ctx.raw / 1e6).toFixed(2) + 'M (' + (ctx.raw / typeTotal * 100).toFixed(1) + '%)' } }
+    }
+  });
+
+  const prov = {};
+  oc.models.filter(d => d.total_tokens > 0).forEach(d => { prov[d.provider] = (prov[d.provider] || 0) + d.total_tokens; });
+  if (oc.claudeModels) prov['claude'] = (prov['claude'] || 0) + oc.claudeModels.reduce((s, d) => s + d.total_tokens, 0);
+  const ps = Object.entries(prov).filter(e => e[1] > 0).sort((a, b) => b[1] - a[1]);
+  updateOrCreateChart('providerChart', 'pie', {
+    labels: ps.map(e => e[0]),
+    datasets: [{ data: ps.map(e => e[1]), backgroundColor: COLORS, borderWidth: 0 }]
+  }, {
+    responsive: true, maintainAspectRatio: false,
+    plugins: { legend: { position: 'right', labels: { color: '#8b949e', font: { size: 10 }, padding: 12, usePointStyle: true } } }
+  });
+
+  const edit = oc.editStats.filter(d => (d.success + d.failed) >= 3).slice(0, 15);
+  if (edit.length > 0) {
+    updateOrCreateChart('adoptionChart', 'bar', {
+      labels: edit.map(d => (d.model || '?') + '\n(' + (d.provider || '?') + ')'),
+      datasets: [
+        { label: '成功', data: edit.map(d => d.success), backgroundColor: '#3fb950', borderRadius: 2 },
+        { label: '失败', data: edit.map(d => d.failed), backgroundColor: '#f85149', borderRadius: 2 }
+      ]
+    }, {
+      indexAxis: 'y',
+      responsive: true, maintainAspectRatio: false,
+      scales: {
+        x: { stacked: true, ticks: { color: '#8b949e' }, grid: { color: '#21262d' } },
+        y: { stacked: true, ticks: { color: '#8b949e', font: { size: 9 } } }
+      },
+      plugins: {
+        legend: { position: 'top', labels: { color: '#8b949e', font: { size: 10 }, usePointStyle: true } },
+        tooltip: { callbacks: { afterLabel: ctx => { const d = edit[ctx.dataIndex]; return '成功率: ' + (d.success / (d.success + d.failed) * 100).toFixed(1) + '%'; } } }
+      }
+    });
+  }
+}
+
+async function fetchData() {
+  if (isLoading) return;
+  const since = document.getElementById('dateSince').value;
+  const until = document.getElementById('dateUntil').value;
+  const source = document.getElementById('sourceSelect').value;
+
+  setLoading(true);
+  try {
+    const r = await fetch(`/api/data?since=${since}&until=${until}&source=${source}`);
+    const result = await r.json();
+    if (result.error) throw new Error(result.error);
+    const data = result.sources || result;
+    document.getElementById('lastUpdate').textContent = '更新: ' + new Date(result.refreshedAt).toLocaleTimeString();
+    document.getElementById('statusDot').className = 'dot';
+    document.getElementById('statusText').textContent = '运行中';
+    renderCards(data);
+    renderCharts(data);
+    resetCountdown();
+  } catch (e) {
+    document.getElementById('lastUpdate').textContent = '错误: ' + e.message;
+    document.getElementById('statusDot').className = 'dot err';
+    document.getElementById('statusText').textContent = '错误';
+  } finally {
+    setLoading(false);
+  }
+}
+
+function applyFilter() {
+  fetchData();
+  setupRefresh();
+}
+
+function resetCountdown() {
+  countdown = refreshInterval / 1000;
+  document.getElementById('countdownBadge').textContent = countdown + 's';
+  document.getElementById('trendCountdown').textContent = '';
+}
+
+function setupRefresh() {
+  if (intervalTimer) clearInterval(intervalTimer);
+  const ms = parseInt(document.getElementById('intervalSelect').value);
+  refreshInterval = ms;
+  if (ms > 0) {
+    intervalTimer = setInterval(fetchData, ms);
+    document.getElementById('countdownBadge').style.display = '';
+    resetCountdown();
+  } else {
+    document.getElementById('countdownBadge').style.display = 'none';
+    document.getElementById('trendCountdown').textContent = '(手动刷新)';
+  }
+}
+
+countdownTimer = setInterval(() => {
+  if (refreshInterval > 0 && !isLoading) {
+    countdown = Math.max(0, countdown - 1);
+    document.getElementById('countdownBadge').textContent = countdown + 's';
+    if (countdown <= 5) document.getElementById('trendCountdown').textContent = '(' + countdown + 's后刷新)';
+  }
+}, 1000);
+
+document.getElementById('intervalSelect').addEventListener('change', setupRefresh);
+setupRefresh();
+fetchData();
+</script>
+</body>
+</html>

@@ -1,0 +1,7 @@
+{
+  "port": 3456,
+  "sources": {
+    "opencode": "~/.local/share/opencode/opencode.db",
+    "claude": "~/.claude/projects"
+  }
+}
